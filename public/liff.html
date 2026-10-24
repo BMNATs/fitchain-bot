@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FitChain Console</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- LINE LIFF SDK -->
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <!-- Ethers.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+    body {
+      font-family: 'IBM Plex Sans Thai', sans-serif;
+    }
+    .font-mono-code {
+      font-family: 'JetBrains Mono', monospace;
+    }
+  </style>
+</head>
+<body class="bg-[#090D16] text-slate-100 min-h-screen flex flex-col justify-between p-5 selection:bg-blue-600">
+  <div>
+    <!-- แถบด้านบน -->
+    <header class="flex items-center justify-between pb-4 border-b border-slate-800/80">
+      <div class="flex items-center space-x-2.5">
+        <div class="w-7 h-7 bg-blue-600/10 border border-blue-500/30 rounded flex items-center justify-center text-blue-400">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+        </div>
+        <div>
+          <span class="font-bold tracking-wider text-sm text-white">FITCHAIN</span>
+          <span class="text-[10px] text-blue-400 font-mono-code block -mt-1 tracking-wider">ระบบจัดการสมาชิกดิจิทัล</span>
+        </div>
+      </div>
+      <div id="userDisplay" class="font-mono-code text-[11px] text-slate-400 bg-slate-900/90 border border-slate-800 px-2.5 py-1 rounded">
+        กำลังโหลด...
+      </div>
+    </header>
+
+    <!-- ข้อมูลกระเป๋าเงิน -->
+    <section class="mt-5 bg-[#0E1526] border border-slate-800 rounded-xl p-4 shadow-xl relative overflow-hidden">
+      <div class="flex justify-between items-center mb-2">
+        <span class="text-xs text-slate-400 font-medium">กระเป๋าเงินที่เชื่อมต่อ</span>
+        <span id="networkBadge" class="text-[10px] font-mono-code text-slate-400 flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> SEPOLIA TESTNET
+        </span>
+      </div>
+
+      <div id="walletAddr" class="font-mono-code text-xs text-slate-300 break-all bg-black/40 p-2.5 rounded border border-slate-800/60 leading-relaxed">
+        ยังไม่ได้เชื่อมต่อกระเป๋า
+      </div>
+
+      <!-- ฟอร์มลงทะเบียน (แสดงเฉพาะตอนเปิดใช้งานครั้งแรก) -->
+      <div id="registrationBlock" class="mt-4 space-y-3">
+        <div class="border-t border-slate-800 pt-3">
+          <label class="block text-xs font-medium text-slate-300 mb-1">ชื่อ - นามสกุล</label>
+          <input type="text" id="fullName" placeholder="นายสมชาย ใจดี" class="w-full bg-black/40 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">เบอร์โทรศัพท์</label>
+          <input type="tel" id="phoneNumber" placeholder="0812345678" class="w-full bg-black/40 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors">
+        </div>
+        <button onclick="connectAndBindWallet()" class="w-full bg-blue-600 hover:bg-blue-500 active:scale-[0.99] text-white font-medium text-xs tracking-wider py-3 rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 mt-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+          </svg>
+          ลงทะเบียน & เชื่อมต่อ METAMASK
+        </button>
+      </div>
+    </section>
+
+    <!-- รายการทำธุรกรรม Smart Contract -->
+    <section id="actionSection" class="mt-6 space-y-2.5 hidden">
+      <div class="flex items-center justify-between text-xs text-slate-400 tracking-wider mb-1">
+        <span>เลือกรายการที่ต้องการทำรายการ</span>
+        <span class="text-[10px] text-slate-500 font-mono-code">GAS: ETH</span>
+      </div>
+
+      <!-- 1: สมัครสมาชิก -->
+      <button onclick="executeTx('สมัครสมาชิกรายเดือน', () => contract.registerMembership(1))" class="w-full bg-[#111827] hover:bg-[#162035] border border-slate-800 hover:border-slate-700 active:scale-[0.99] p-3.5 rounded-lg text-left transition flex items-center justify-between group">
+        <div>
+          <div class="text-xs font-semibold text-slate-200 group-hover:text-blue-400 transition-colors">สมัครสมาชิกรายเดือน</div>
+          <div class="text-[11px] text-slate-500 mt-0.5">เปิดสิทธิ์เข้าใช้บริการฟิตเนสเริ่มต้น</div>
+        </div>
+        <span class="text-xs text-blue-400 bg-blue-950/60 border border-blue-800/40 px-2.5 py-1 rounded">30 วัน</span>
+      </button>
+
+      <!-- 2: ต่ออายุ -->
+      <button onclick="executeTx('ต่ออายุสมาชิก', () => contract.renewMembership(1))" class="w-full bg-[#111827] hover:bg-[#162035] border border-slate-800 hover:border-slate-700 active:scale-[0.99] p-3.5 rounded-lg text-left transition flex items-center justify-between group">
+        <div>
+          <div class="text-xs font-semibold text-slate-200 group-hover:text-emerald-400 transition-colors">ต่ออายุสมาชิก</div>
+          <div class="text-[11px] text-slate-500 mt-0.5">ขยายเวลาจากวันหมดอายุเดิมทันที</div>
+        </div>
+        <span class="text-xs text-emerald-400 bg-emerald-950/60 border border-emerald-800/40 px-2.5 py-1 rounded">+1 เดือน</span>
+      </button>
+
+      <!-- 3: พักสมาชิก -->
+      <button onclick="executeTx('พักสมาชิก', () => contract.freezeMembership(1))" class="w-full bg-[#111827] hover:bg-[#162035] border border-slate-800 hover:border-slate-700 active:scale-[0.99] p-3.5 rounded-lg text-left transition flex items-center justify-between group">
+        <div>
+          <div class="text-xs font-semibold text-slate-200 group-hover:text-amber-400 transition-colors">พักสถานะสมาชิกชั่วคราว</div>
+          <div class="text-[11px] text-slate-500 mt-0.5">หยุดนับวันใช้งานชั่วคราวเพื่อรักษาสิทธิ์</div>
+        </div>
+        <span class="text-xs text-amber-400 bg-amber-950/60 border border-amber-800/40 px-2.5 py-1 rounded">พักการใช้งาน</span>
+      </button>
+
+      <!-- 4: ยกเลิก -->
+      <button onclick="executeTx('ยกเลิกสมาชิกถาวร', () => contract.terminateMembership())" class="w-full bg-[#111827] hover:bg-[#162035] border border-slate-800 hover:border-red-900/40 active:scale-[0.99] p-3.5 rounded-lg text-left transition flex items-center justify-between group">
+        <div>
+          <div class="text-xs font-semibold text-slate-300 group-hover:text-red-400 transition-colors">ยกเลิกสมาชิกถาวร</div>
+          <div class="text-[11px] text-slate-500 mt-0.5">สิ้นสุดสัญญาและระงับสิทธิ์เข้าใช้งาน</div>
+        </div>
+        <span class="text-xs text-red-400 bg-red-950/40 border border-red-800/40 px-2.5 py-1 rounded">ยกเลิก</span>
+      </button>
+    </section>
+
+    <!-- สถานะการประมวลผล -->
+    <div id="statusLog" class="mt-5 text-xs text-slate-400 text-center min-h-[22px] tracking-wide"></div>
+  </div>
+
+  <!-- ปุ่มปิดหน้าต่าง -->
+  <footer class="pt-6 border-t border-slate-900">
+    <button onclick="liff.closeWindow()" class="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white py-2.5 rounded-lg text-xs transition-all">
+      ปิดหน้าต่างระบบ
+    </button>
+  </footer>
+
+  <script>
+    const MY_LIFF_ID = "2012056528-oeG8TTkE";
+    const CONTRACT_ADDRESS = "0x41759E6E3c64748Df8E9B4ec1A1d2f4fCDaB94dE";
+    
+    // ABI ที่ตรงเป๊ะกับ Smart Contract ล่าสุด
+    const ABI = [
+      "function registerMembership(uint8 monthsPlan) external",
+      "function renewMembership(uint8 monthsPlan) external",
+      "function freezeMembership(uint8 monthsToFreeze) external",
+      "function terminateMembership() external"
+    ];
+
+    let lineUserId = null;
+    let contract = null;
+
+    async function initLiff() {
+      try {
+        await liff.init({ liffId: MY_LIFF_ID });
+        if (!liff.isLoggedIn()) {
+          liff.login();
+          return;
+        }
+        const profile = await liff.getProfile();
+        lineUserId = profile.userId;
+        document.getElementById('userDisplay').innerText = profile.displayName;
+
+        // ดึงข้อมูลสมาชิกจาก SQLite
+        const res = await fetch(`/api/member-info?userId=${lineUserId}`);
+        const result = await res.json();
+
+        if (result.ok && result.data && result.data.wallet_address) {
+          document.getElementById('walletAddr').innerText = result.data.wallet_address;
+          if (result.data.full_name) document.getElementById('fullName').value = result.data.full_name;
+          if (result.data.phone_number) document.getElementById('phoneNumber').value = result.data.phone_number;
+
+          if (window.ethereum) {
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            const signer = await provider.getSigner();
+            contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+            document.getElementById('registrationBlock').classList.add('hidden');
+            document.getElementById('actionSection').classList.remove('hidden');
+            document.getElementById('statusLog').innerText = "พร้อมทำรายการบนบล็อกเชน";
+          }
+        }
+      } catch (err) {
+        document.getElementById('statusLog').innerText = "ข้อผิดพลาดระบบ: " + err.message;
+      }
+    }
+
+    async function connectAndBindWallet() {
+      const fullName = document.getElementById('fullName').value.trim();
+      const phoneNumber = document.getElementById('phoneNumber').value.trim();
+
+      if (!fullName || !phoneNumber) {
+        alert("กรุณากรอกชื่อ-นามสกุล และเบอร์โทรศัพท์ให้ครบถ้วน");
+        return;
+      }
+
+      if (!window.ethereum) {
+        alert("ไม่พบ Web3 Provider กรุณาเปิดผ่านแอป MetaMask หรือเบราว์เซอร์ที่มี Web3 Extension");
+        return;
+      }
+
+      try {
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const signer = await provider.getSigner();
+        const address = await signer.getAddress();
+        contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+
+        document.getElementById('walletAddr').innerText = address;
+
+        document.getElementById('statusLog').innerText = "กำลังบันทึกข้อมูลส่วนตัวและผูกกระเป๋า...";
+        const res = await fetch('/api/bind-wallet', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            lineUserId, 
+            walletAddress: address,
+            fullName,
+            phoneNumber
+          })
+        });
+        const result = await res.json();
+        if (result.ok) {
+          document.getElementById('registrationBlock').classList.add('hidden');
+          document.getElementById('actionSection').classList.remove('hidden');
+          document.getElementById('statusLog').innerText = "ลงทะเบียนสำเร็จ พร้อมทำรายการ";
+        }
+      } catch (err) {
+        document.getElementById('statusLog').innerText = "ข้อผิดพลาด: " + err.message;
+      }
+    }
+
+    async function executeTx(actionTitle, fn) {
+      const log = document.getElementById('statusLog');
+      try {
+        log.innerText = `รอยืนยันธุรกรรมในกระเป๋า (${actionTitle})...`;
+        const tx = await fn();
+        log.innerText = "กำลังบันทึกข้อมูลลงบล็อกเชน...";
+        await tx.wait();
+        log.innerText = `ทำรายการสำเร็จ: ${actionTitle}`;
+        setTimeout(() => {
+          liff.closeWindow();
+        }, 1200);
+      } catch (err) {
+        log.innerText = "ธุรกรรมถูกยกเลิกหรือไม่สำเร็จ: " + (err.reason || err.message);
+      }
+    }
+
+    window.onload = initLiff;
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "fitchain-line-bot",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^9.5.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.17.0",
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=25.0.0"
+  }
+}
