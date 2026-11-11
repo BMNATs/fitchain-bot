@@ -1,3 +1,5 @@
 node_modules/
 .env
 members.db
+.DS_Store
+members.db*
