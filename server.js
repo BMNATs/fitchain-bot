@@ -8,20 +8,23 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ------------------------------------------------------------------------
+// ⚙️ การตั้งค่าราคาเงินบาท (THB) และตัวแปรสภาพแวดล้อม
+// ------------------------------------------------------------------------
+const PRICES = {
+  MONTHLY: 990,   // ราคาแพ็กเกจรายเดือน (บาท)
+  YEARLY: 9900    // ราคาแพ็กเกจรายปี (บาท)
+};
+
 const secret = process.env.LINE_CHANNEL_SECRET;
 const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const rpcUrl = process.env.RPC_URL || 'https://rpc.hoodi.ethpandaops.io';
 const contractAddress = process.env.CONTRACT_ADDRESS || '0x26dd0394A7251196D320F72b053134ABd6f2e67d';
-const liffUrl = process.env.LIFF_URL || 'https://liff.line.me/2012056528-oeG8TTkE';
-const baseUrl = process.env.BASE_URL; // *** ต้องเพิ่มใน .env เช่น BASE_URL=https://xxxx.ngrok-free.app
+const adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
 
 if (!secret || !token) {
-  console.error('กรุณาตั้งค่า LINE_CHANNEL_SECRET และ LINE_CHANNEL_ACCESS_TOKEN ใน .env');
+  console.error('กรุณาตั้งค่า LINE_CHANNEL_SECRET และ LINE_CHANNEL_ACCESS_TOKEN ใน .env ครับ');
   process.exit(1);
-}
-
-if (!baseUrl) {
-  console.warn('คำเตือน: ไม่พบ BASE_URL ใน .env ปุ่มดีดเข้า MetaMask อาจทำงานไม่ถูกต้อง');
 }
 
 // ฐานข้อมูล SQLite
@@ -35,62 +38,30 @@ db.exec(`CREATE TABLE IF NOT EXISTS memberships (
   requested_at TEXT
 )`);
 
+// ------------------------------------------------------------------------
+// 📄 ABI ของ GymMembership.sol ตัวใหม่
+// ------------------------------------------------------------------------
 const contractAbi = [
   "function getMembership(address user) external view returns (uint256 dueDate, uint256 freezeUntil, uint256 freezeUsed, uint8 planMonths, uint8 status)",
-  "function canEnterGym(address user) external view returns (bool)"
+  "function canEnterGym(address user) external view returns (bool)",
+  "function registerMembershipForUser(address user, uint8 monthsPlan)",
+  "function renewMembershipForUser(address user, uint8 monthsPlan)",
+  "function freezeMembership(uint8 monthsToFreeze)",
+  "function unfreezeMembership()"
 ];
 
 const app = express();
 const client = new messagingApi.MessagingApiClient({ channelAccessToken: token });
 
-// Static & LIFF
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/liff', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'liff.html')));
 
-// Bypass ngrok header
 app.use((req, res, next) => {
   res.setHeader('ngrok-skip-browser-warning', 'true');
   next();
 });
 
-// --- [NEW] หน้าสะพานสำหรับดีดเข้า MetaMask เพื่อแก้ปัญหาเด้งไป App Store ---
-app.get('/open-metamask', (req, res) => {
-  const metamaskLink = `https://metamask.app.link/dapp/${liffUrl}`;
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="th">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Launching MetaMask...</title>
-      <script src="https://cdn.tailwindcss.com"></script>
-      <style>
-        body { background-color: #0B0F19; color: white; font-family: sans-serif; }
-      </style>
-    </head>
-    <body class="flex items-center justify-center h-screen text-center p-6">
-      <div class="max-w-sm">
-        <div class="mb-6 inline-block p-4 rounded-full bg-blue-600/20 text-blue-500 animate-bounce">
-          <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
-        </div>
-        <h1 class="text-xl font-bold mb-2">กำลังเชื่อมต่อกับ MetaMask...</h1>
-        <p class="text-slate-400 mb-8 text-sm">ระบบกำลังพาคุณไปยังแอป MetaMask เพื่อทำธุรกรรมบน Blockchain</p>
-        <a href="${metamaskLink}" class="bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-full font-bold transition-all active:scale-95 inline-block shadow-lg shadow-blue-600/30">
-          เปิดแอป MetaMask
-        </a>
-      </div>
-      <script>
-        // ดีดเข้าแอปอัตโนมัติทันทีที่หน้าโหลดเสร็จ
-        window.location.href = "${metamaskLink}";
-      </script>
-    </body>
-    </html>
-  `);
-});
-
-// LINE Webhook (ต้องอยู่ก่อน express.json เสมอ)
+// LINE Webhook
 app.post('/webhook', middleware({ channelSecret: secret }), async (req, res) => {
   res.status(200).end();
   for (const event of req.body.events || []) {
@@ -101,10 +72,8 @@ app.post('/webhook', middleware({ channelSecret: secret }), async (req, res) => 
   }
 });
 
-// LIFF API
 app.use('/api', express.json());
 
-// API ตรวจสอบข้อมูลสมาชิกสำหรับหน้า LIFF (Auto-detect)
 app.get('/api/member-info', (req, res) => {
   const userId = req.query.userId;
   if (!userId) return res.status(400).json({ ok: false });
@@ -127,9 +96,64 @@ app.post('/api/bind-wallet', (req, res) => {
   return res.json({ ok: true });
 });
 
+// ------------------------------------------------------------------------
+// 💳 Callback ระบบตัดเงินบาท (PromptPay Payment Relayer)
+// ------------------------------------------------------------------------
+app.post('/api/payment-callback', async (req, res) => {
+  const { lineUserId, monthsPlan, actionType } = req.body; // actionType: 'register' หรือ 'renew'
+  
+  if (!lineUserId || !monthsPlan) {
+    return res.status(400).json({ ok: false, message: 'Missing parameters' });
+  }
+
+  const member = db.prepare('SELECT wallet_address FROM memberships WHERE line_user_id = ?').get(lineUserId);
+  
+  let targetWallet = member?.wallet_address;
+  if (!targetWallet) {
+    const randomWallet = ethers.Wallet.createRandom();
+    targetWallet = randomWallet.address;
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO memberships (line_user_id, wallet_address, plan, status, requested_at) 
+      VALUES (?, ?, ?, 'None', ?)`).run(lineUserId, targetWallet.toLowerCase(), monthsPlan == 12 ? 'yearly' : 'monthly', now);
+  }
+
+  try {
+    if (!adminPrivateKey) {
+      throw new Error("ADMIN_PRIVATE_KEY missing in .env");
+    }
+
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const adminWallet = new ethers.Wallet(adminPrivateKey, provider);
+    const contract = new ethers.Contract(contractAddress, contractAbi, adminWallet);
+
+    let tx;
+    if (actionType === 'renew') {
+      tx = await contract.renewMembershipForUser(targetWallet, Number(monthsPlan));
+    } else {
+      tx = await contract.registerMembershipForUser(targetWallet, Number(monthsPlan));
+    }
+    
+    await tx.wait();
+
+    // แจ้งเตือนผ่าน LINE ทันทีเมื่อ On-chain บันทึกสำเร็จ
+    await client.pushMessage({
+      to: lineUserId,
+      messages: [{
+        type: 'text',
+        text: `🎉 ชำระเงินสำเร็จแล้ว!\nสิทธิ์สมาชิกของคุณถูกบันทึกลง Smart Contract เรียบร้อยครับ\n(Tx Hash: ${tx.hash})`
+      }]
+    });
+
+    return res.json({ ok: true, txHash: tx.hash });
+  } catch (err) {
+    console.error("Relayer Tx Error:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // UI BUILDERS
 
-// 1. การ์ดแสดงบัตรสมาชิก (Membership Pass)
+// 1. การ์ดแสดงบัตรสมาชิก (Pass Card)
 function buildPassCard({ wallet, statusText, canEnter, dueDate, freezeUntil }) {
   const isPassActive = canEnter;
   const isTerminated = statusText.includes('Terminated') || statusText.includes('ยกเลิก');
@@ -152,7 +176,7 @@ function buildPassCard({ wallet, statusText, canEnter, dueDate, freezeUntil }) {
       layout: 'horizontal',
       contents: [
         { type: 'text', text: 'กระเป๋า', size: 'xs', color: '#94A3B8', flex: 3 },
-        { type: 'text', text: wallet ? `${wallet.slice(0, 6)}...${wallet.slice(-4)}` : 'ยังไม่ผูก', size: 'xs', color: '#38BDF8', weight: 'bold', flex: 5, align: 'end' }
+        { type: 'text', text: wallet ? `${wallet.slice(0, 6)}...${wallet.slice(-4)}` : 'สร้างให้อัตโนมัติ', size: 'xs', color: '#38BDF8', weight: 'bold', flex: 5, align: 'end' }
       ]
     },
     {
@@ -178,7 +202,7 @@ function buildPassCard({ wallet, statusText, canEnter, dueDate, freezeUntil }) {
 
   return {
     type: 'flex',
-    altText: `บัตรสมาชิก FitChain Pass - ${isPassActive ? 'พร้อมใช้งาน' : 'ไม่พร้อมใช้งาน'}`,
+    altText: `บัตรสมาชิก FitChain Pass`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -196,14 +220,7 @@ function buildPassCard({ wallet, statusText, canEnter, dueDate, freezeUntil }) {
             layout: 'horizontal',
             alignItems: 'center',
             contents: [
-              {
-                type: 'text',
-                text: 'FITCHAIN',
-                weight: 'bold',
-                size: 'lg',
-                color: '#F8FAFC',
-                flex: 1
-              },
+              { type: 'text', text: 'FITCHAIN', weight: 'bold', size: 'lg', color: '#F8FAFC', flex: 1 },
               {
                 type: 'box',
                 layout: 'horizontal',
@@ -213,37 +230,13 @@ function buildPassCard({ wallet, statusText, canEnter, dueDate, freezeUntil }) {
                 paddingEnd: '8px',
                 paddingTop: '3px',
                 paddingBottom: '3px',
-                contents: [
-                  {
-                    type: 'text',
-                    text: badgeText,
-                    size: 'xs',
-                    color: badgeColor,
-                    weight: 'bold'
-                  }
-                ]
+                contents: [{ type: 'text', text: badgeText, size: 'xs', color: badgeColor, weight: 'bold' }]
               }
             ]
           },
-          {
-            type: 'text',
-            text: 'DECENTRALIZED GYM PASS',
-            size: 'xs',
-            color: '#64748B',
-            margin: 'xs'
-          },
-          {
-            type: 'separator',
-            margin: 'md',
-            color: '#1E293B'
-          },
-          {
-            type: 'box',
-            layout: 'vertical',
-            margin: 'lg',
-            spacing: 'sm',
-            contents: rows
-          }
+          { type: 'text', text: 'DECENTRALIZED GYM PASS', size: 'xs', color: '#64748B', margin: 'xs' },
+          { type: 'separator', margin: 'md', color: '#1E293B' },
+          { type: 'box', layout: 'vertical', margin: 'lg', spacing: 'sm', contents: rows }
         ]
       },
       footer: {
@@ -255,24 +248,58 @@ function buildPassCard({ wallet, statusText, canEnter, dueDate, freezeUntil }) {
         contents: [
           {
             type: 'button',
-            style: 'secondary',
-            color: '#1E293B',
-            height: 'sm',
-            action: {
-              type: 'message',
-              label: 'รีเฟรช',
-              text: 'สถานะสมาชิก'
-            }
-          },
-          {
-            type: 'button',
             style: 'primary',
             color: '#2563EB',
             height: 'sm',
+            action: { type: 'message', label: 'เช็คสถานะปัจจุบัน', text: 'สถานะสมาชิก' }
+          }
+        ]
+      }
+    }
+  };
+}
+
+// 2. การ์ดชำระเงิน PromptPay QR Code
+function buildPromptPayCheckoutCard({ planTitle, priceText, planMonths, actionType }) {
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=PromptPay-FitChain-${priceText}-THB`;
+
+  return {
+    type: 'flex',
+    altText: `ชำระเงิน ${planTitle}`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      styles: {
+        body: { backgroundColor: '#0B0F19' },
+        footer: { backgroundColor: '#0B0F19' }
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '20px',
+        contents: [
+          { type: 'text', text: 'PROMPTPAY THAI QR PAYMENT', weight: 'bold', size: 'xs', color: '#10B981' },
+          { type: 'text', text: `ชำระเงิน ${planTitle}`, weight: 'bold', size: 'lg', color: '#F8FAFC', margin: 'xs' },
+          { type: 'text', text: `ยอดชำระ: ${priceText} บาท (สแกนผ่านแอปธนาคารไทย)`, size: 'xs', color: '#94A3B8', margin: 'xs' },
+          { type: 'separator', margin: 'md', color: '#1E293B' },
+          { type: 'image', url: qrUrl, size: 'md', aspectRatio: '1:1', margin: 'md' }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        paddingTop: '0px',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#10B981',
+            height: 'sm',
             action: {
-              type: 'uri',
-              label: 'จัดการผ่าน MetaMask',
-              uri: `${baseUrl}/open-metamask` // <--- แก้ไขให้วิ่งผ่านหน้าสะพาน
+              type: 'message',
+              label: 'จำลองสแกนจ่ายเงินสำเร็จ',
+              text: `ชำระเงินสำเร็จ ${planMonths} เดือน (${actionType})`
             }
           }
         ]
@@ -281,7 +308,7 @@ function buildPassCard({ wallet, statusText, canEnter, dueDate, freezeUntil }) {
   };
 }
 
-// 2. การ์ดเลือกแพ็กเกจ (Package Selection Card)
+// 3. เลือกแพ็กเกจ
 function buildPlanSelectCard() {
   return {
     type: 'flex',
@@ -289,42 +316,16 @@ function buildPlanSelectCard() {
     contents: {
       type: 'bubble',
       size: 'mega',
-      styles: {
-        body: { backgroundColor: '#0B0F19' }
-      },
+      styles: { body: { backgroundColor: '#0B0F19' } },
       body: {
         type: 'box',
         layout: 'vertical',
         paddingAll: '20px',
         contents: [
-          {
-            type: 'text',
-            text: 'MEMBERSHIP TIERS',
-            weight: 'bold',
-            size: 'xs',
-            color: '#38BDF8'
-          },
-          {
-            type: 'text',
-            text: 'เลือกแพ็กเกจของคุณ',
-            weight: 'bold',
-            size: 'xl',
-            color: '#F8FAFC',
-            margin: 'xs'
-          },
-          {
-            type: 'text',
-            text: 'เข้าใช้บริการฟิตเนสไม่จำกัดรอบ บันทึกสิทธิ์ผ่าน Smart Contract',
-            size: 'xs',
-            color: '#64748B',
-            wrap: true,
-            margin: 'sm'
-          },
-          {
-            type: 'separator',
-            margin: 'lg',
-            color: '#1E293B'
-          },
+          { type: 'text', text: 'MEMBERSHIP TIERS', weight: 'bold', size: 'xs', color: '#38BDF8' },
+          { type: 'text', text: 'เลือกแพ็กเกจสมาชิก', weight: 'bold', size: 'xl', color: '#F8FAFC', margin: 'xs' },
+          { type: 'text', text: 'ชำระผ่านแอปธนาคารไทย ระบบจะบันทึกสิทธิ์ลง Blockchain ให้อัตโนมัติ', size: 'xs', color: '#64748B', wrap: true, margin: 'sm' },
+          { type: 'separator', margin: 'lg', color: '#1E293B' },
           {
             type: 'box',
             layout: 'vertical',
@@ -339,16 +340,8 @@ function buildPlanSelectCard() {
                 alignItems: 'center',
                 contents: [
                   { type: 'text', text: 'รายเดือน (1 เดือน)', weight: 'bold', size: 'sm', color: '#F8FAFC', flex: 1 },
-                  { type: 'text', text: 'Monthly Pass', size: 'xs', color: '#38BDF8' }
+                  { type: 'text', text: `${PRICES.MONTHLY.toLocaleString()} บาท`, size: 'xs', color: '#10B981', weight: 'bold' }
                 ]
-              },
-              {
-                type: 'text',
-                text: 'เหมาะสำหรับเริ่มต้นทดลองใช้งาน\nปลดล็อกสิทธิ์เข้าใช้บริการ 30 วัน',
-                size: 'xs',
-                color: '#94A3B8',
-                wrap: true,
-                margin: 'sm'
               },
               {
                 type: 'button',
@@ -356,11 +349,7 @@ function buildPlanSelectCard() {
                 color: '#2563EB',
                 height: 'sm',
                 margin: 'md',
-                action: {
-                  type: 'message',
-                  label: 'เลือกแพ็กเกจรายเดือน',
-                  text: 'สมัครแพ็กเกจรายเดือน'
-                }
+                action: { type: 'message', label: 'จ่ายเงินบาท (รายเดือน)', text: 'สมัครแพ็กเกจรายเดือน' }
               }
             ]
           },
@@ -378,16 +367,8 @@ function buildPlanSelectCard() {
                 alignItems: 'center',
                 contents: [
                   { type: 'text', text: 'รายปี (12 เดือน)', weight: 'bold', size: 'sm', color: '#F8FAFC', flex: 1 },
-                  { type: 'text', text: 'BEST VALUE', size: 'xs', color: '#A855F7', weight: 'bold' }
+                  { type: 'text', text: `${PRICES.YEARLY.toLocaleString()} บาท`, size: 'xs', color: '#A855F7', weight: 'bold' }
                 ]
-              },
-              {
-                type: 'text',
-                text: 'รับสิทธิ์เข้าฟิตเนสยาวนาน 365 วัน\nสิทธิ์ในการ Freeze พักสมาชิกเพิ่มขึ้น',
-                size: 'xs',
-                color: '#C4B5FD',
-                wrap: true,
-                margin: 'sm'
               },
               {
                 type: 'button',
@@ -395,107 +376,9 @@ function buildPlanSelectCard() {
                 color: '#7C3AED',
                 height: 'sm',
                 margin: 'md',
-                action: {
-                  type: 'message',
-                  label: 'เลือกแพ็กเกจรายปี',
-                  text: 'สมัครแพ็กเกจรายปี'
-                }
+                action: { type: 'message', label: 'จ่ายเงินบาท (รายปี)', text: 'สมัครแพ็กเกจรายปี' }
               }
             ]
-          }
-        ]
-      }
-    }
-  };
-}
-
-// 3. การ์ดยืนยันชำระเงิน On-Chain (รับสีและชื่อแพ็กเกจแบบ Dynamic)
-function buildConfirmCheckoutCard({ planTitle, tierTag, themeColor, durationDesc }) {
-  return {
-    type: 'flex',
-    altText: `ยืนยันการสมัคร ${planTitle}`,
-    contents: {
-      type: 'bubble',
-      size: 'mega',
-      styles: {
-        body: { backgroundColor: '#0B0F19' },
-        footer: { backgroundColor: '#0B0F19' }
-      },
-      body: {
-        type: 'box',
-        layout: 'vertical',
-        paddingAll: '20px',
-        contents: [
-          {
-            type: 'box',
-            layout: 'horizontal',
-            alignItems: 'center',
-            contents: [
-              {
-                type: 'text',
-                text: tierTag || 'CHECKOUT CONFIRMATION',
-                weight: 'bold',
-                size: 'xs',
-                color: themeColor,
-                flex: 1
-              },
-              {
-                type: 'text',
-                text: durationDesc || 'PROTOCOL CALL',
-                size: 'xs',
-                color: '#64748B',
-                align: 'end'
-              }
-            ]
-          },
-          {
-            type: 'text',
-            text: `ยืนยันคำขอ ${planTitle}`,
-            weight: 'bold',
-            size: 'lg',
-            color: '#F8FAFC',
-            margin: 'sm'
-          },
-          {
-            type: 'text',
-            text: 'ระบบเตรียมคำขอเรียบร้อยแล้ว กรุณากดเปิด FitChain Pass เพื่อ Sign ยืนยันบน Smart Contract',
-            size: 'xs',
-            color: '#94A3B8',
-            wrap: true,
-            margin: 'sm'
-          },
-          {
-            type: 'separator',
-            margin: 'lg',
-            color: '#1E293B'
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            margin: 'lg',
-            contents: [
-              { type: 'text', text: 'เครือข่าย', size: 'xs', color: '#64748B', flex: 1 },
-              { type: 'text', text: 'Sepolia Testnet', size: 'xs', color: '#F8FAFC', weight: 'bold', align: 'end', flex: 1 }
-            ]
-          }
-        ]
-      },
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        paddingAll: '16px',
-        paddingTop: '0px',
-        contents: [
-          {
-            type: 'button',
-            style: 'primary',
-            color: themeColor,
-            height: 'sm',
-            action: {
-              type: 'uri',
-              label: 'เปิดใน MetaMask ทันที',
-              uri: `${baseUrl}/open-metamask` // <--- แก้ไขให้วิ่งผ่านหน้าสะพาน
-            }
           }
         ]
       }
@@ -524,20 +407,48 @@ async function handleEvent(event) {
       reply = buildPlanSelectCard();
     }
     else if (rawText === 'สมัครแพ็กเกจรายเดือน') {
-      reply = buildConfirmCheckoutCard({
-        planTitle: 'แพ็กเกจรายเดือน',
-        tierTag: 'MONTHLY PASS',
-        themeColor: '#2563EB', 
-        durationDesc: '30 DAYS'
+      reply = buildPromptPayCheckoutCard({
+        planTitle: 'แพ็กเกจรายเดือน (30 วัน)',
+        priceText: PRICES.MONTHLY.toLocaleString(),
+        planMonths: 1,
+        actionType: 'register'
       });
     }
     else if (rawText === 'สมัครแพ็กเกจรายปี') {
-      reply = buildConfirmCheckoutCard({
-        planTitle: 'แพ็กเกจรายปี',
-        tierTag: 'ANNUAL ELITE PASS',
-        themeColor: '#7C3AED', 
-        durationDesc: '365 DAYS'
+      reply = buildPromptPayCheckoutCard({
+        planTitle: 'แพ็กเกจรายปี (365 วัน)',
+        priceText: PRICES.YEARLY.toLocaleString(),
+        planMonths: 12,
+        actionType: 'register'
       });
+    }
+    else if (rawText === 'ต่ออายุสมาชิก') {
+      reply = buildPromptPayCheckoutCard({
+        planTitle: 'ต่ออายุสมาชิก (+1 เดือน)',
+        priceText: PRICES.MONTHLY.toLocaleString(),
+        planMonths: 1,
+        actionType: 'renew'
+      });
+    }
+    // จำลองเมื่อผู้ใช้กดสแกนชำระเงินสำเร็จ
+    else if (rawText.startsWith('ชำระเงินสำเร็จ')) {
+      const months = rawText.includes('12') ? 12 : 1;
+      const isRenew = rawText.includes('renew');
+      
+      fetch(`http://localhost:${process.env.PORT || 3000}/api/payment-callback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          lineUserId: userId, 
+          monthsPlan: months,
+          actionType: isRenew ? 'renew' : 'register'
+        })
+      }).catch(err => console.error("Self call error:", err));
+
+      reply = {
+        type: 'text',
+        text: '⏳ ได้รับยอดชำระเงินบาทแล้ว! ระบบกำลังบันทึกสิทธิ์ของคุณลงบล็อกเชน (Gasless Transfer)...'
+      };
     }
     else if (rawText.replace(/\s+/g, '') === 'สถานะสมาชิก') {
       const member = db.prepare('SELECT wallet_address FROM memberships WHERE line_user_id = ?').get(userId);
@@ -558,7 +469,8 @@ async function handleEvent(event) {
 
           const data = await contract.getMembership(member.wallet_address);
           const canEnter = await contract.canEnterGym(member.wallet_address);
-          const statusIdx = Number(data[4]);
+          
+          const statusIdx = Number(data[4] ?? data.status);
           const currentStatus = statusNames[statusIdx] || 'None';
 
           db.prepare('UPDATE memberships SET status = ? WHERE line_user_id = ?').run(currentStatus, userId);
@@ -578,28 +490,6 @@ async function handleEvent(event) {
         }
       }
     }
-    else if (rawText === 'ต่ออายุสมาชิก') {
-      reply = buildConfirmCheckoutCard({
-        planTitle: 'ต่ออายุสมาชิก (+1 เดือน)',
-        tierTag: 'RENEWAL',
-        themeColor: '#059669',
-        durationDesc: '+1 MONTH'
-      });
-    }
-    else if (rawText === 'พักสมาชิก') {
-      reply = buildConfirmCheckoutCard({
-        planTitle: 'พักสมาชิก (Freeze)',
-        tierTag: 'FREEZE STATUS',
-        themeColor: '#D97706',
-        durationDesc: 'SUSPENSION'
-      });
-    }
-    else if (rawText === 'ยกเลิกสมาชิก') {
-      reply = {
-        type: 'text',
-        text: 'ต้องการยกเลิกสมาชิก กรุณาติดต่อเคาน์เตอร์ฟิตเนส หรือทำรายการผ่าน DApp'
-      };
-    }
   }
 
   if (reply) {
@@ -607,4 +497,4 @@ async function handleEvent(event) {
   }
 }
 
-app.listen(Number(process.env.PORT) || 3000, () => console.log('FitChain Premium Bot is ready on port 3000'));
+app.listen(Number(process.env.PORT) || 3000, () => console.log('FitChain Premium Bot with PromptPay Relayer is ready on port 3000'));
